@@ -1,0 +1,615 @@
+# Banking AI-DLC Pipeline — Harness CI/CD
+# templates/harness-banking-ci.yaml
+
+pipeline:
+  name: Banking AI-DLC CI/CD
+  identifier: banking_ai_dlc_cicd
+  projectIdentifier: BANKING_PROJECT
+  orgIdentifier: default
+  tags:
+    domain: "banking"
+    criticality: "high"
+    compliance: ["bacen", "lgpd", "sox", "pci-dss"]
+  variables:
+    - name: DOCKER_REGISTRY
+      type: String
+      value: "123456789.dkr.ecr.sa-east-1.amazonaws.com"
+    - name: JAVA_VERSION
+      type: String
+      value: "21"
+    - name: MAVEN_OPTS
+      type: String
+      value: "-Xmx2g -XX:+UseContainerSupport"
+    - name: TEST_INTELLIGENCE
+      type: Boolean
+      value: true
+    - name: BANKING_THRESHOLDS
+      type: String
+      value: "strict"
+
+  stages:
+    # =============================================================================
+    # STAGE 1: CODE QUALITY & SECURITY (Obrigatório)
+    # =============================================================================
+    - stage:
+        name: Code Quality & Security
+        identifier: code_quality_security
+        type: CI
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec:
+              containerRegistry: ecr-banking
+              image: maven:3.9-eclipse-temurin-21
+          execution:
+            steps:
+              - step:
+                  name: Cache Maven Dependencies
+                  identifier: cache_maven
+                  type: Cache
+                  spec:
+                    key: "maven-${{ checksum 'pom.xml' }}-${{ checksum 'pom.lock' }}"
+                    paths:
+                      - ~/.m2/repository
+              - step:
+                  name: Java Compile & Unit Tests
+                  identifier: java_compile_test
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./mvnw compile test -DskipITs=true \
+                        -DtestIntelligence=${TEST_INTELLIGENCE} \
+                        -DfailIfNoTests=false \
+                        -Djacoco.skip=false \
+                        -Dspotbugs.skip=false \
+                        -Dcheckstyle.skip=false \
+                        -Dpmd.skip=false
+                    envVars:
+                      MAVEN_OPTS: "${MAVEN_OPTS}"
+              - step:
+                  name: Integration Tests (Testcontainers)
+                  identifier: integration_tests
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./mvnw verify -DskipTests=false -DskipUnitTests=true \
+                        -DtestIntelligence=${TEST_INTELLIGENCE} \
+                        -Dcucumber.filter.tags="@banking"
+                    envVars:
+                      MAVEN_OPTS: "${MAVEN_OPTS}"
+              - step:
+                  name: SAST (SonarQube + Checkmarx)
+                  identifier: sast
+                  type: SecurityScan
+                  spec:
+                    scanner: HarnessSAST
+                    failOnSeverity: HIGH
+                    config:
+                      sonar_project_key: "${PROJECT}"
+                      sonar_organization: "itau-unibanco"
+              - step:
+                  name: SCA (Dependencies + Licenses + SBOM)
+                  identifier: sca
+                  type: SecurityScan
+                  spec:
+                    scanner: HarnessSCA
+                    failOnCVSS: 7.0
+                    config:
+                      generate_sbom: true
+                      sbom_format: "spdx-json"
+              - step:
+                  name: Secrets Scan
+                  identifier: secrets
+                  type: SecurityScan
+                  spec:
+                    scanner: HarnessSecrets
+                    config:
+                      fail_on_severity: HIGH
+              - step:
+                  name: Policy Check (OPA — Banking Compliance)
+                  identifier: opa_banking
+                  type: Run
+                  spec:
+                    image: openpolicyagent/opa:latest
+                    shell: Bash
+                    command: |
+                      set -e
+                      opa eval \
+                        -i target/eval-results.json \
+                        -d policies/banking/compliance-gates.rego \
+                        "data.banking.compliance.deny" \
+                        --format json > opa-results.json
+                      
+                      VIOLATIONS=$(cat opa-results.json | jq -r '.result[0].expressions[0].value | length')
+                      if [ "$VIOLATIONS" -gt 0 ]; then
+                        echo "❌ POLICY VIOLATIONS ($VIOLATIONS):"
+                        cat opa-results.json | jq -r '.result[0].expressions[0].value[]'
+                        exit 1
+                      fi
+                      echo "✅ All compliance gates passed"
+                    envVars:
+                      OPA_POLICIES_DIR: "policies/banking"
+
+    # =============================================================================
+    # STAGE 2: AI EVALUATION (Banking Gates — Obrigatório)
+    # =============================================================================
+    - stage:
+        name: AI Evaluation (Banking Gates)
+        identifier: ai_evaluation
+        type: CI
+        dependsOn: ["code_quality_security"]
+        condition: "SUCCESS"
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec:
+              containerRegistry: ecr-banking
+              image: python:3.11-slim
+          execution:
+            steps:
+              - step:
+                  name: Setup Python Eval Environment
+                  identifier: setup_python_eval
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      pip install --no-cache-dir -r evals/requirements.txt
+                      pip install --no-cache-dir promptfoo ragas deepeval
+              - step:
+                  name: Golden Set Evaluation (RAGAS + Banking Thresholds)
+                  identifier: golden_set_eval
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      pytest evals/ -v --tb=short \
+                        --banking-thresholds \
+                        --junitxml=target/eval-results.xml \
+                        --json-report=target/eval-results.json
+                    envVars:
+                      BANKING_THRESHOLDS: "${BANKING_THRESHOLDS}"
+              - step:
+                  name: Red Teaming (PromptFoo — Injection, Jailbreak, PII, Financial)
+                  identifier: red_teaming
+                  type: Run
+                  spec:
+                    image: promptfoo/promptfoo:latest
+                    shell: Bash
+                    command: |
+                      promptfoo eval -c evals/redteam-banking.yaml \
+                        -o target/redteam-results.json
+              - step:
+                  name: Calculation Accuracy (Financial Math Tests)
+                  identifier: calc_accuracy
+                  type: Run
+                  spec:
+                    image: maven:3.9-eclipse-temurin-21
+                    shell: Bash
+                    command: |
+                      ./mvnw test -Dtest=*CalculationTest,*FinancialMathTest,*InterestTest,*TaxTest \
+                        -Dsurefire.useFile=false
+              - step:
+                  name: Idempotency & Chaos Tests
+                  identifier: chaos_idempotency
+                  type: Run
+                  spec:
+                    image: maven:3.9-eclipse-temurin-21
+                    shell: Bash
+                    command: |
+                      ./mvnw test -Dtest=*IdempotencyTest,*ChaosTest,*OutboxTest \
+                        -Dchaos.monkey.enabled=true \
+                        -Dchaos.faults=kafka_broker_down,db_latency,network_partition
+              - step:
+                  name: Contract Testing (Pact — Consumer & Provider)
+                  identifier: contract_testing
+                  type: Run
+                  spec:
+                    image: maven:3.9-eclipse-temurin-21
+                    shell: Bash
+                    command: |
+                      ./mvnw test -Dtest=*PactConsumerTest,*PactProviderTest
+                      ./mvnw pact:publish \
+                        -Dpact.broker.url=${PACT_BROKER_URL} \
+                        -Dpact.publish.verificationResults=true
+                    envVars:
+                      PACT_BROKER_URL: "https://pact.itau.com.br"
+
+    # =============================================================================
+    # STAGE 3: BUILD & SECURITY SCAN
+    # =============================================================================
+    - stage:
+        name: Build & Security Scan
+        identifier: build_security_scan
+        dependsOn: ["ai_evaluation"]
+        condition: "SUCCESS"
+        spec:
+          cloneCodebase: true
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec:
+              containerRegistry: ecr-banking
+          execution:
+            steps:
+              - step:
+                  name: Build Docker Image (Distroless + Non-root)
+                  identifier: build_docker
+                  type: BuildAndPushDockerRegistry
+                  spec:
+                    connectorRef: ecr-banking
+                    repo: "${DOCKER_REGISTRY}/banking/${PROJECT}"
+                    tags:
+                      - "<+pipeline.sequenceId>"
+                      - "latest"
+                      - "git-<+codebase.commitSha>"
+                    dockerfile: Dockerfile.distroless
+                    context: .
+                    buildArgs:
+                      JAVA_VERSION: "${JAVA_VERSION}"
+                      BUILD_DATE: "<+pipeline.startTime>"
+                      GIT_COMMIT: "<+codebase.commitSha>"
+                      GIT_BRANCH: "<+codebase.branch>"
+                    scanOnPush: true
+              - step:
+                  name: Container Scan (Trivy + Syft SBOM)
+                  identifier: container_scan
+                  type: SecurityScan
+                  spec:
+                    scanner: HarnessContainerScan
+                    failOnSeverity: HIGH
+                    config:
+                      scan_config:
+                        severity: "HIGH,CRITICAL"
+                        ignore_unfixed: false
+              - step:
+                  name: Generate SBOM (SPDX + CycloneDX)
+                  identifier: generate_sbom
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      syft ${DOCKER_REGISTRY}/banking/${PROJECT}:<+pipeline.sequenceId> \
+                        -o spdx-json=target/sbom.spdx.json \
+                        -o cyclonedx-json=target/sbom.cdx.json
+                      cosign sign --yes ${DOCKER_REGISTRY}/banking/${PROJECT}:<+pipeline.sequenceId>
+              - step:
+                  name: Sign Image (Cosign + Keyless)
+                  identifier: sign_image
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      cosign sign --yes \
+                        --annotations "git.commit=<+codebase.commitSha>,git.branch=<+codebase.branch>" \
+                        ${DOCKER_REGISTRY}/banking/${PROJECT}:<+pipeline.sequenceId>
+
+    # =============================================================================
+    # STAGE 4: DEPLOY STAGING (Canary Regulatório)
+    # =============================================================================
+    - stage:
+        name: Deploy Staging (Canary Regulatório)
+        identifier: deploy_staging
+        dependsOn: ["build_security_scan"]
+        condition: "SUCCESS"
+        spec:
+          deploymentType: Kubernetes
+          service:
+            name: ${PROJECT}
+            identifier: ${PROJECT}
+          environment:
+            name: Staging
+            identifier: staging
+            spec:
+              type: PreProduction
+              infrastructureDefinitions:
+                - identifier: k8s-staging
+          execution:
+            steps:
+              - step:
+                  name: Pre-Deploy Validation
+                  identifier: pre_deploy_check
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/pre-deploy-check.sh \
+                        --image ${DOCKER_REGISTRY}/banking/${PROJECT}:<+pipeline.sequenceId> \
+                        --environment staging \
+                        --verify-sbom \
+                        --verify-signature
+              - step:
+                  name: Canary 5% (Segmento Interno Controlado)
+                  identifier: canary_5
+                  type: K8sCanaryDeploy
+                  spec:
+                    replicas: "2"
+                    trafficSplit: 5
+                    featureFlags:
+                      - key: "banking.canary.segment"
+                        value: "internal-employees"
+                      - key: "banking.canary.version"
+                        value: "<+pipeline.sequenceId>"
+                    manifest:
+                      manifestType: K8sManifest
+                      spec:
+                        store:
+                          type: Github
+                          spec:
+                            connectorRef: github-enterprise
+                            repoName: banking-manifests
+                            branch: main
+                            filePaths:
+                              - "overlays/staging/"
+              - step:
+                  name: Smoke Tests + Regulatory Validation
+                  identifier: validate_canary
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/validate-canary.sh \
+                        --environment staging \
+                        --canary-percent 5 \
+                        --smoke-tests \
+                        --regulatory-check \
+                        --sla-validation \
+                        --timeout 300
+                    envVars:
+                      CANARY_PERCENT: "5"
+              - step:
+                  name: Progressive Rollout (25% → 50% → 100%)
+                  identifier: progressive_rollout
+                  type: K8sCanaryPromote
+                  spec:
+                    steps:
+                      - trafficSplit: 25
+                        waitDuration: "10m"
+                        featureFlags:
+                          - key: "banking.canary.segment"
+                            value: "internal-employees,beta-customers"
+                      - trafficSplit: 50
+                        waitDuration: "10m"
+                        featureFlags:
+                          - key: "banking.canary.segment"
+                            value: "internal-employees,beta-customers,10%-production"
+                      - trafficSplit: 100
+                        waitDuration: "5m"
+                    rollbackOnFailure: true
+              - step:
+                  name: Post-Deploy Validation (Full)
+                  identifier: post_deploy_validation
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/post-deploy-validation.sh \
+                        --environment staging \
+                        --full-regression \
+                        --chaos-validation \
+                        --performance-baseline
+
+    # =============================================================================
+    # STAGE 5: DEPLOY PRODUCTION (Blue-Green + Aprovação)
+    # =============================================================================
+    - stage:
+        name: Deploy Production (Blue-Green + Governança)
+        identifier: deploy_production
+        dependsOn: ["deploy_staging"]
+        condition: "SUCCESS"
+        spec:
+          deploymentType: Kubernetes
+          service:
+            name: ${PROJECT}
+            identifier: ${PROJECT}
+          environment:
+            name: Production
+            identifier: production
+            spec:
+              type: Production
+              infrastructureDefinitions:
+                - identifier: k8s-production
+          execution:
+            steps:
+              - step:
+                  name: Governança — Aprovação Obrigatória
+                  identifier: governance_approval
+                  type: HarnessApproval
+                  spec:
+                    approvers:
+                      - userGroup: "banking-tech-leads"
+                      - userGroup: "banking-compliance"
+                    minimumApprovals: 2
+                    approvalCriteria: "ALL"
+                    notes: |
+                      ✅ Checklist obrigatório:
+                      - [ ] Staging validation 100% passed
+                      - [ ] Regulatory compliance gates passed
+                      - [ ] Security scans clean
+                      - [ ] Performance baseline met
+                      - [ ] Rollback plan documented
+                      - [ ] On-call notified
+                      - [ ] Change advisory board (CAB) informed
+                    timeout: "4h"
+              - step:
+                  name: Blue-Green Deploy (Zero Downtime)
+                  identifier: blue_green_deploy
+                  type: K8sBlueGreenDeploy
+                  spec:
+                    blueGreenStrategy:
+                      activeService: "${PROJECT}-blue"
+                      previewService: "${PROJECT}-green"
+                      trafficShift:
+                        type: "IMMEDIATE"
+                    manifest:
+                      manifestType: K8sManifest
+                      spec:
+                        store:
+                          type: Github
+                          spec:
+                            connectorRef: github-enterprise
+                            repoName: banking-manifests
+                            branch: main
+                            filePaths:
+                              - "overlays/production/"
+              - step:
+                  name: Production Validation (Smoke + Canary 1%)
+                  identifier: prod_validation
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/prod-validation.sh \
+                        --environment production \
+                        --smoke-tests \
+                        --canary-percent 1 \
+                        --regulatory-check \
+                        --timeout 180
+                    envVars:
+                      CANARY_PERCENT: "1"
+              - step:
+                  name: Progressive Production Rollout (5% → 25% → 100%)
+                  identifier: prod_progressive
+                  type: K8sBlueGreenPromote
+                  spec:
+                    steps:
+                      - trafficSplit: 5
+                        waitDuration: "15m"
+                        featureFlags:
+                          - key: "banking.production.segment"
+                            value: "pilot-customers"
+                      - trafficSplit: 25
+                        waitDuration: "15m"
+                        featureFlags:
+                          - key: "banking.production.segment"
+                            value: "pilot-customers,10%-general"
+                      - trafficSplit: 100
+                        waitDuration: "10m"
+                    rollbackOnFailure: true
+              - step:
+                  name: Post-Production Monitoring (30min)
+                  identifier: post_prod_monitoring
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/post-prod-monitoring.sh \
+                        --duration 30m \
+                        --alert-on-sla-breach \
+                        --alert-on-error-rate 0.001 \
+                        --alert-on-latency-p99 5000
+              - step:
+                  name: Cleanup Blue Environment
+                  identifier: cleanup_blue
+                  type: K8sBlueGreenCleanup
+                  spec: {}
+
+    # =============================================================================
+    # STAGE 6: POST-DEPLOY (Feedback Loop)
+    # =============================================================================
+    - stage:
+        name: Post-Deploy Feedback Loop
+        identifier: post_deploy_feedback
+        dependsOn: ["deploy_production"]
+        condition: "SUCCESS"
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  name: Collect Production Metrics (24h)
+                  identifier: collect_metrics
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/collect-prod-metrics.sh \
+                        --deployment-id <+pipeline.sequenceId> \
+                        --window 24h \
+                        --output target/prod-metrics.json
+              - step:
+                  name: Drift Detection (Embedding + Data)
+                  identifier: drift_detection
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      python scripts/drift_detection.py \
+                        --baseline evals/golden-set/embeddings.npy \
+                        --current target/prod-embeddings.npy \
+                        --threshold 0.05 \
+                        --output target/drift-report.json
+              - step:
+                  name: Cost Analysis (Per Inference)
+                  identifier: cost_analysis
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      python scripts/cost_analysis.py \
+                        --deployment-id <+pipeline.sequenceId> \
+                        --window 24h \
+                        --threshold 0.30 \
+                        --output target/cost-report.json
+              - step:
+                  name: Feedback Collection (User Signals)
+                  identifier: feedback_collection
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      ./scripts/collect-feedback.sh \
+                        --deployment-id <+pipeline.sequenceId> \
+                        --window 24h \
+                        --output target/feedback-report.json
+              - step:
+                  name: Auto-Retrain Trigger Check
+                  identifier: retrain_trigger
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      python scripts/retrain_trigger.py \
+                        --feedback-report target/feedback-report.json \
+                        --drift-report target/drift-report.json \
+                        --cost-report target/cost-report.json \
+                        --threshold-feedback-negative 0.20 \
+                        --threshold-drift 0.05 \
+                        --threshold-cost 0.35 \
+                        --output target/retrain-decision.json
+              - step:
+                  name: Trigger Retrain Pipeline (Se Necessário)
+                  identifier: trigger_retrain
+                  type: Run
+                  spec:
+                    shell: Bash
+                    command: |
+                      DECISION=$(cat target/retrain-decision.json | jq -r '.should_retrain')
+                      if [ "$DECISION" = "true" ]; then
+                        echo "🔄 Triggering retrain pipeline..."
+                        harness pipeline run \
+                          --project ml-training \
+                          --pipeline banking-model-retrain \
+                          --variable DEPLOYMENT_ID=<+pipeline.sequenceId> \
+                          --variable TRIGGER_REASON="$(cat target/retrain-decision.json | jq -r '.reason')"
+                      else
+                        echo "✅ No retrain needed"
+                      fi

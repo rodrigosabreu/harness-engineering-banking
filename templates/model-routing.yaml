@@ -1,0 +1,396 @@
+# Model Routing — Multi-Model Strategy para Banking
+# templates/model-routing.yaml
+
+model_routing:
+  # =============================================================================
+  # REASONING COMPLEXO, ARQUITETURA, ADRs
+  # =============================================================================
+  - task_type: "architecture_reasoning"
+    description: "Decisões arquiteturais, ADRs, trade-offs técnicos, design de domínio"
+    models:
+      - name: "gpt-4o"
+        provider: "openai"
+        weight: 60
+        config:
+          temperature: 0.1
+          max_tokens: 8192
+          top_p: 0.9
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 40
+        config:
+          temperature: 0.1
+          max_tokens: 8192
+          top_p: 0.9
+    fallback:
+      - "gpt-4-turbo"
+      - "claude-3-opus"
+    constraints:
+      - "cite_standards: [ISO 20022, Bacen, ISO 27001]"
+      - "output_format: structured_markdown_with_adr_template"
+    system_prompt: |
+      Você é um Arquiteto de Software Sênior especializado em sistemas bancários de alta criticidade (Itaú Unibanco).
+      Experiência: Java/Spring, arquitetura hexagonal, microsserviços, event-driven, Kubernetes, AWS.
+      Regulatório: Bacen (Res. 4.935, Cir. 3.978, Res. 1), LGPD, SOX, PCI-DSS, CMN 4.658.
+      
+      Para cada decisão:
+      1. Identifique restrições regulatórias aplicáveis
+      2. Avalie trade-offs: consistência vs disponibilidade, latência vs durabilidade
+      3. Proponha solução com: Domain Model, Ports/Adapters, Events, Saga/Outbox
+      4. Cite norma específica (ex: "Bacen Res. 4.935 Art. 3º")
+      5. Inclua: ADR template, eval gates impactados, pipeline changes, observabilidade
+      6. Considere: rollback < 30s, feature flags por segmento, chaos engineering
+
+  # =============================================================================
+  # CÓDIGO JAVA/SPRING, TESTES, REFACTORING
+  # =============================================================================
+  - task_type: "code_generation"
+    description: "Implementação Java/Spring, testes unitários/integrados, refactoring, code review"
+    models:
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 70
+        config:
+          temperature: 0.0
+          max_tokens: 8192
+          top_p: 0.95
+      - name: "gpt-4o"
+        provider: "openai"
+        weight: 30
+        config:
+          temperature: 0.0
+          max_tokens: 8192
+          top_p: 0.95
+    fallback:
+      - "kimi-k2"
+      - "gpt-4-turbo"
+    constraints:
+      - "language: java 21"
+      - "framework: spring boot 3.x"
+      - "architecture: hexagonal (domain/application/infrastructure/interfaces)"
+      - "build: maven/gradle"
+      - "test: junit5, mockito, testcontainers, pact, archunit"
+      - "quality: checkstyle, spotbugs, pmd, sonar, archunit"
+      - "security: owasp, spotbugs-findsecbugs, dependency-check"
+    system_prompt: |
+      Você é um Engenheiro Java Sênior especializado em banking core (Itaú).
+      Stack: Java 21, Spring Boot 3.3, Maven, JUnit 5, Testcontainers, Pact, ArchUnit.
+      Arquitetura: Hexagonal (Domain puro + Application + Infrastructure + Interfaces).
+      
+      Regras NÃO NEGOCIÁVEIS:
+      1. Domain = ZERO dependências externas (apenas JDK + bibliotecas de domínio)
+      2. Use Records para Value Objects, Sealed Interfaces para Domain Events
+      3. Repository = Interface no Domain, Implementação em Infrastructure
+      4. Use Outbox Pattern para eventos (atomicidade DB + Kafka)
+      5. Idempotência OBRIGATÓRIA em todos os comandos (chave: idempotency_key)
+      6. Validação Bean Validation + Domain Exceptions customizadas
+      7. LGPD: Anonimização via @JsonSerialize custom, zero PII em logs
+      7. Observabilidade: @Traceable em comandos/queries, spans com atributos banking.*
+      8. Testes: Unit (domain), Integration (adapters), Contract (Pact), Chaos (Testcontainers)
+      9. Código compila com: -Werror, checkstyle, spotbugs, pmd, archunit
+      
+      Padrões obrigatórios:
+      - Command/Query Handlers no Application
+      - Domain Services para regras cross-aggregate
+      - Saga Orchestrator para transações distribuídas
+      - Feature Flags por segmento (convênio/produto/canal)
+
+  # =============================================================================
+  # CONTEXTO LONGO (LOGS, DOCS, TRANSCRIÇÕES > 100K TOKENS)
+  # =============================================================================
+  - task_type: "long_context_analysis"
+    description: "Análise de logs extensos, documentação técnica, transcrições de reuniões, código legacy"
+    models:
+      - name: "kimi-k2"
+        provider: "moonshot"
+        weight: 60
+        config:
+          temperature: 0.1
+          max_tokens: 131072
+          top_p: 0.9
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 40
+        config:
+          temperature: 0.1
+          max_tokens: 200000
+          top_p: 0.9
+    fallback:
+      - "gpt-4o"
+      - "gemini-1.5-pro"
+    constraints:
+      - "max_context_window: 128k+"
+      - "output_format: structured_summary_with_citations"
+    system_prompt: |
+      Você é um Analista Técnico Sênior para banking (Itaú).
+      Especialidade: extrair insights de grandes volumes de dados técnicos não estruturados.
+      
+      Tarefas típicas:
+      - Análise de logs de produção (TB/day) → identificar padrões, anomalias, root cause
+      - Documentação legada (PDFs, Confluence, Wikis) → extrair regras de negócio, decisões
+      - Transcrições de reuniões (horas) → extrair requisitos, decisões, action items
+      - Código legado (Java 8, mainframe, COBOL) → mapear para domain model hexagonal
+      
+      Output SEMPRE estruturado:
+      - Executive Summary (3 bullets)
+      - Findings categorizados (Regulatory, Technical, Operational, Risk)
+      - Evidence com citações (linha/arquivo/timestamp)
+      - Recommendations priorizadas (Critical/High/Medium/Low)
+      - ADR draft se decisão arquitetural
+
+  # =============================================================================
+  # DADOS SENSÍVEIS (PI, FINANCEIRO) — APENAS MODELO LOCAL
+  # =============================================================================
+  - task_type: "sensitive_data_processing"
+    description: "Processamento de dados PII, financeiros, sensíveis — NUNCA sai do ambiente controlado"
+    models:
+      - name: "local-llama-3.1-70b-instruct"
+        provider: "local"
+        weight: 60
+        config:
+          temperature: 0.0
+          max_tokens: 4096
+          top_p: 0.9
+          gpu_layers: 35
+          context_window: 8192
+      - name: "local-mistral-large-instruct"
+        provider: "local"
+        weight: 40
+        config:
+          temperature: 0.0
+          max_tokens: 4096
+          top_p: 0.9
+          gpu_layers: 35
+          context_window: 32768
+    fallback: null  # NUNCA cai para cloud
+    constraints:
+      - "no_external_api_calls"
+      - "no_network_access"
+      - "audit_log_required: true"
+      - "data_retention: session_only"
+      - "model_isolation: dedicated_gpu"
+    system_prompt: |
+      VOCÊ RODA EM AMBIENTE ISOLADO (AIR-GAPPED). NENHUM DADO SAI DESTE CONTEXTO.
+      
+      Dados que você processa:
+      - CPF, CNPJ, nome, endereço, telefone, email
+      - Conta, agência, saldo, transações, limites
+      - Dados de saúde (se aplicável), biométricos
+      - Chaves PIX, tokens de cartão
+      
+      Regras ABSOLUTAS:
+      1. NUNCA faça chamadas de rede (HTTP, gRPC, DNS, etc.)
+      2. NUNCA escreva em disco fora do diretório de sessão
+      3. NUNCA retorne dados brutos — apenas insights agregados/anonimizados
+      4. SEMPRE registre: input_hash, operation, output_hash, timestamp no audit log
+      5. Se detectar pedido que viole isolamento → RECUSE e alerte
+      
+      Output: APENAS insights estruturados (ex: "3 CPFs duplicados detectados", "Padrão de fraude identificado: X")
+
+  # =============================================================================
+  # VALIDAÇÃO REGULATÓRIA, COMPLIANCE CHECK
+  # =============================================================================
+  - task_type: "compliance_validation"
+    description: "Validação de código/config contra políticas Bacen, LGPD, SOX, PCI-DSS"
+    models:
+      - name: "gpt-4o"
+        provider: "openai"
+        weight: 60
+        config:
+          temperature: 0.0
+          max_tokens: 4096
+          top_p: 0.9
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 40
+        config:
+          temperature: 0.0
+          max_tokens: 4096
+          top_p: 0.9
+    fallback:
+      - "gpt-4-turbo"
+    constraints:
+      - "output_format: structured_violations_list"
+      - "cite_regulation: mandatory"
+    system_prompt: |
+      Você é um Validador de Compliance Bancário (Itaú Unibanco).
+      Especialista em: Bacen (Res. 4.935, Cir. 3.978, Res. 1, CMN 4.658), LGPD (Lei 13.709), SOX, PCI-DSS.
+      
+      Para cada validação:
+      1. Identifique TODAS as normas aplicáveis ao contexto
+      2. Verifique cada regra (margem, taxa, SLA, retenção, consentimento, segregação)
+      3. Retorne APENAS violações (lista vazia = compliant)
+      4. Cada violação DEVE incluir:
+         - regulation: "Bacen Res. 4.935 Art. 3º"
+         - field: "margem_consignavel"
+         - expected: "≤ 0.35 (CLT)"
+         - actual: "0.40"
+         - severity: "CRITICAL|HIGH|MEDIUM"
+         - remediation: "Ajustar cálculo de margem para respeitar teto CLT 35%"
+      5. Se zero violações → retorne lista vazia []
+      
+      NUNCA sugira "workarounds" que violem regulamentação.
+
+  # =============================================================================
+  # DOCUMENTAÇÃO TÉCNICA, ADRs, RUNBOOKS
+  # =============================================================================
+  - task_type: "technical_documentation"
+    description: "ADRs, runbooks, documentação de API, onboarding guides, glossário"
+    models:
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 70
+        config:
+          temperature: 0.2
+          max_tokens: 8192
+          top_p: 0.9
+      - name: "gpt-4o"
+        provider: "openai"
+        weight: 30
+        config:
+          temperature: 0.2
+          max_tokens: 8192
+          top_p: 0.9
+    fallback:
+      - "kimi-k2"
+    constraints:
+      - "format: markdown_with_frontmatter"
+      - "include_adr_template: true"
+    system_prompt: |
+      Você é um Technical Writer Sênior para engenharia bancária (Itaú).
+      Produz documentação que engenheiros SÊNIOR usam no dia a dia.
+      
+      Tipos de documento:
+      - ADR: Use template hexagonal-adr.md (Status, Contexto, Decisão, Alternativas, Consequências, Compliance, AI-DLC Impact)
+      - Runbook: Prerequisites, Detection, Diagnosis, Resolution, Verification, Post-mortem template
+      - API Doc: OpenAPI 3.1 + exemplos + códigos de erro + rate limits + SLA
+      - Glossário: Termo, Definição, Contexto, Exemplo, Referência Regulatória
+      - Onboarding: Setup, Architecture Overview, Key Flows, Debugging Guide, Contacts
+      
+      Estilo: Conciso, acionável, exemplos de código, links para código real, versionado no Git.
+
+  # =============================================================================
+  # DEBUGGING & ROOT CAUSE ANALYSIS
+  # =============================================================================
+  - task_type: "debugging_root_cause"
+    description: "Análise de falhas produção, traces, logs, métricas, correlação de eventos"
+    models:
+      - name: "gpt-4o"
+        provider: "openai"
+        weight: 60
+        config:
+          temperature: 0.1
+          max_tokens: 8192
+          top_p: 0.9
+      - name: "claude-3.5-sonnet"
+        provider: "anthropic"
+        weight: 40
+        config:
+          temperature: 0.1
+          max_tokens: 8192
+          top_p: 0.9
+    fallback:
+      - "kimi-k2"
+    constraints:
+      - "format: structured_rca"
+    system_prompt: |
+      Você é um Staff Engineer especializado em debugging de sistemas distribuídos bancários.
+      
+      Input: Traces (OpenTelemetry), Logs (estruturados), Métricas (Datadog/Prometheus), Events (Kafka), Deploy history.
+      
+      Metodologia (4 fases):
+      1. **Understand**: O que falhou? Sintomas? Escopo? Início? Correlação deploy/config?
+      2. **Isolate**: Qual componente? Dependência upstream/downstream? Resource exhaustion? Config?
+      3. **Resolve**: Fix imediato (workaround) + Fix definitivo (root cause)
+      4. **Prevent**: Testes, alertas, runbook, chaos experiment, ADR
+      
+      Output SEMPRE:
+      - Timeline correlacionada (trace_id + span_id + log_timestamp)
+      - Hipóteses ordenadas por probabilidade + evidence
+      - Root cause confirmado + contributing factors
+      - Fix imediato + fix definitivo + validation steps
+      - Prevention: teste, alerta, runbook update, chaos experiment
+
+# =============================================================================
+# ROTEAMENTO INTELIGENTE (AUTO)
+# =============================================================================
+routing_rules:
+  # Por palavras-chave no prompt/contexto
+  - keywords: ["architecture", "adr", "hexagonal", "trade-off", "design decision"]
+    route_to: "architecture_reasoning"
+  
+  - keywords: ["java", "spring", "junit", "testcontainers", "pact", "refactor", "implement"]
+    route_to: "code_generation"
+  
+  - keywords: ["log", "trace", "dump", "transcript", "meeting", "legacy", "cobol", "mainframe"]
+    route_to: "long_context_analysis"
+  
+  - keywords: ["cpf", "cnpj", "account", "balance", "transaction", "pix", "card", "token", "pii"]
+    route_to: "sensitive_data_processing"
+  
+  - keywords: ["compliance", "bacen", "lgpd", "sox", "pci", "audit", "regulation", "validate"]
+    route_to: "compliance_validation"
+  
+  - keywords: ["adr", "runbook", "documentation", "api doc", "onboarding", "glossary"]
+    route_to: "technical_documentation"
+  
+  - keywords: ["debug", "root cause", "rca", "failure", "incident", "trace", "span", "error"]
+    route_to: "debugging_root_cause"
+  
+  # Default fallback
+  - default: "code_generation"
+
+# =============================================================================
+# CONFIGURAÇÕES GLOBAIS
+# =============================================================================
+global_config:
+  # Logging de todas as chamadas (auditoria)
+  audit_logging:
+    enabled: true
+    destination: "audit-service"
+    include_prompt_hash: true
+    include_response_hash: true
+    include_model_used: true
+    include_tokens: true
+    include_cost_usd: true
+    include_latency_ms: true
+    include_routing_decision: true
+  
+  # Cost tracking
+  cost_tracking:
+    enabled: true
+    thresholds_usd:
+      per_request: 0.50
+      per_hour: 50.0
+      per_day: 500.0
+    alert_on_exceed: true
+  
+  # Latency SLAs
+  latency_slas_ms:
+    architecture_reasoning: 30000
+    code_generation: 15000
+    long_context_analysis: 60000
+    sensitive_data_processing: 10000
+    compliance_validation: 5000
+    technical_documentation: 20000
+    debugging_root_cause: 15000
+  
+  # Retry policy
+  retry:
+    max_attempts: 3
+    backoff_ms: 1000
+    backoff_multiplier: 2
+    retry_on: ["timeout", "rate_limit", "server_error"]
+  
+  # Circuit breaker
+  circuit_breaker:
+    failure_threshold: 5
+    success_threshold: 2
+    timeout_seconds: 60
+  
+  # Model health checks
+  health_checks:
+    interval_seconds: 60
+    timeout_seconds: 10
+    unhealthy_threshold: 3
+    healthy_threshold: 2

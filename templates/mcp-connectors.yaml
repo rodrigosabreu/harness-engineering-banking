@@ -1,0 +1,486 @@
+# MCP Connectors — Integrações Padrão Itaú Unibanco
+# templates/mcp-connectors.yaml
+
+mcp_connectors:
+  # =============================================================================
+  # GESTÃO DE TRABALHO & REQUISITOS
+  # =============================================================================
+  - name: jira-software
+    type: atlassian-jira
+    description: "Jira Software Cloud — Gestão de épicos, stories, bugs, sprints"
+    config:
+      base_url: "https://itau.atlassian.net"
+      auth:
+        type: vault
+        path: "kv/jira/api-token"
+      projects: ["CRED", "CONC", "REMU", "PLAT", "ARCH"]
+      default_project: "CRED"
+    tools:
+      - search_issues
+      - get_issue
+      - create_issue
+      - update_issue
+      - transition_issue
+      - add_comment
+      - get_transitions
+      - search_issues_jql
+      - get_sprint
+      - get_board
+    rate_limit:
+      requests_per_minute: 100
+    timeout_seconds: 30
+
+  - name: jira-service-management
+    type: atlassian-jira
+    description: "JSM — Incident, Problem, Change, Service Request"
+    config:
+      base_url: "https://itau.atlassian.net"
+      auth:
+        type: vault
+        path: "kv/jira/api-token"
+      projects: ["ITSM", "SEC"]
+    tools:
+      - create_request
+      - get_request
+      - search_requests
+      - add_comment
+      - approve_change
+
+  # =============================================================================
+  # DOCUMENTAÇÃO & CONHECIMENTO
+  # =============================================================================
+  - name: confluence
+    type: atlassian-confluence
+    description: "Confluence Cloud — Documentação técnica, ADRs, runbooks, glossário"
+    config:
+      base_url: "https://itau.atlassian.net/wiki"
+      auth:
+        type: vault
+        path: "kv/confluence/api-token"
+      spaces: ["ENG", "ARCH", "COMPLIANCE", "BANKING", "PLATFORM"]
+      default_space: "ENG"
+    tools:
+      - search_pages
+      - get_page
+      - create_page
+      - update_page
+      - delete_page
+      - get_page_children
+      - search_content
+      - add_label
+      - get_labels
+    rate_limit:
+      requests_per_minute: 60
+
+  - name: gitbook
+    type: custom
+    description: "GitBook — Documentação pública/externa, onboarding"
+    config:
+      base_url: "https://api.gitbook.com"
+      auth:
+        type: vault
+        path: "kv/gitbook/token"
+      organization: "itau-unibanco"
+    tools:
+      - search_content
+      - get_page
+      - create_page
+
+  # =============================================================================
+  # CÓDIGO, QUALIDADE & SEGURANÇA
+  # =============================================================================
+  - name: github-enterprise
+    type: github
+    description: "GitHub Enterprise — Código, PRs, Actions, Packages, Security"
+    config:
+      host: "github.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/github/pat"
+      organizations: ["itau-unibanco", "itau-platform", "itau-banking"]
+      default_org: "itau-unibanco"
+    tools:
+      - search_code
+      - get_file
+      - get_repository
+      - create_pull_request
+      - get_pull_request
+      - update_pull_request
+      - merge_pull_request
+      - create_review
+      - get_reviews
+      - run_workflow
+      - get_workflow_run
+      - get_actions_secrets
+      - create_deployment
+      - get_deployment_status
+    rate_limit:
+      requests_per_minute: 500
+
+  - name: sonarqube
+    type: sonarqube
+    description: "SonarQube — Quality Gates, Code Smells, Security Hotspots, Coverage"
+    config:
+      base_url: "https://sonar.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/sonar/token"
+      default_organization: "itau-unibanco"
+    tools:
+      - get_project_quality_gate
+      - get_project_measures
+      - get_issues
+      - get_hotspots
+      - get_project_branches
+      - wait_for_quality_gate
+
+  - name: checkmarx
+    type: custom
+    description: "Checkmarx SAST — Análise estática de segurança"
+    config:
+      base_url: "https://cx.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/checkmarx/credentials"
+    tools:
+      - create_scan
+      - get_scan_status
+      - get_results
+      - get_vulnerabilities
+
+  - name: dependency-track
+    type: custom
+    description: "OWASP Dependency Track — SCA, SBOM, Vulnerabilidades"
+    config:
+      base_url: "https://dtrack.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/dependency-track/api-key"
+    tools:
+      - get_project
+      - get_findings
+      - get_bom
+      - create_project
+
+  # =============================================================================
+  # SEGURANÇA, SECRETS & CRIPTOGRAFIA
+  # =============================================================================
+  - name: hashicorp-vault
+    type: vault
+    description: "HashiCorp Vault — Secrets, Dynamic Credentials, PKI, Transit"
+    config:
+      address: "https://vault.itau.com.br"
+      namespace: "banking"
+      auth:
+        type: kubernetes
+        role: "banking-agent"
+      mount_path: "secret"
+    tools:
+      - read_secret
+      - write_secret
+      - delete_secret
+      - list_secrets
+      - generate_token
+      - renew_token
+      - encrypt_data
+      - decrypt_data
+      - sign_data
+      - verify_signature
+    rate_limit:
+      requests_per_minute: 200
+
+  - name: aws-kms
+    type: custom
+    description: "AWS KMS — Chaves gerenciadas, assinatura, criptografia"
+    config:
+      region: "sa-east-1"
+      auth:
+        type: iam_role
+        role_arn: "arn:aws:iam::123456789:role/BankingAgentKMS"
+    tools:
+      - encrypt
+      - decrypt
+      - sign
+      - verify
+      - generate_data_key
+      - describe_key
+
+  # =============================================================================
+  # DADOS, CATÁLOGO & LINHAGEM
+  # =============================================================================
+  - name: datacatalog
+    type: custom
+    description: "Catálogo de Dados Itaú — Metadados, Linhagem, Dono, Qualidade"
+    config:
+      base_url: "https://catalogo.itau.com.br/api/v1"
+      auth:
+        type: vault
+        path: "kv/datacatalog/token"
+    tools:
+      - search_dataset
+      - get_dataset
+      - get_schema
+      - get_lineage
+      - get_owner
+      - get_quality_metrics
+      - search_glossary
+      - get_business_term
+
+  - name: databricks
+    type: custom
+    description: "Databricks — Feature Store, MLflow, Notebooks, Jobs"
+    config:
+      host: "https://dbc-itau.cloud.databricks.com"
+      auth:
+        type: vault
+        path: "kv/databricks/token"
+    tools:
+      - list_experiments
+      - get_run
+      - log_metric
+      - log_param
+      - register_model
+      - transition_model_stage
+      - get_feature_table
+
+  # =============================================================================
+  # OBSERVABILIDADE & MONITORAMENTO
+  # =============================================================================
+  - name: datadog
+    type: datadog
+    description: "Datadog — Métricas, Traces, Logs, Monitors, Dashboards, SLOs"
+    config:
+      api_url: "https://api.datadoghq.com"
+      auth:
+        type: vault
+        path: "kv/datadog/api-key"
+      app_key:
+        type: vault
+        path: "kv/datadog/app-key"
+      site: "datadoghq.com"
+    tools:
+      - query_metrics
+      - get_traces
+      - search_logs
+      - create_monitor
+      - get_monitor
+      - create_dashboard
+      - get_slo
+      - create_slo
+      - post_event
+    rate_limit:
+      requests_per_minute: 300
+
+  - name: grafana
+    type: custom
+    description: "Grafana — Dashboards, Alertas, Loki, Tempo, Pyroscope"
+    config:
+      base_url: "https://grafana.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/grafana/api-key"
+    tools:
+      - query_prometheus
+      - query_loki
+      - query_tempo
+      - get_dashboard
+      - create_annotation
+
+  - name: pagerduty
+    type: custom
+    description: "PagerDuty — Incident Response, On-call, Escalation"
+    config:
+      base_url: "https://api.pagerduty.com"
+      auth:
+        type: vault
+        path: "kv/pagerduty/api-key"
+    tools:
+      - create_incident
+      - get_incident
+      - acknowledge_incident
+      - resolve_incident
+      - get_oncall
+      - create_change_event
+
+  # =============================================================================
+  # INFRAESTRUTURA & DEPLOY
+  # =============================================================================
+  - name: argo-cd
+    type: argocd
+    description: "ArgoCD — GitOps, Deploy, Rollback, Sync, Health"
+    config:
+      server: "argocd.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/argocd/token"
+      grpc_web: true
+    tools:
+      - get_application
+      - list_applications
+      - sync_application
+      - rollback_application
+      - get_application_history
+      - create_application
+      - delete_application
+      - get_repositories
+      - get_clusters
+
+  - name: kubernetes
+    type: kubernetes
+    description: "Kubernetes — Pods, Services, ConfigMaps, Secrets, Events"
+    config:
+      clusters:
+        - name: "prod-sa-east-1"
+          context: "prod-sa-east-1"
+          auth:
+            type: vault
+            path: "kv/k8s/prod-sa-east-1/token"
+        - name: "staging-sa-east-1"
+          context: "staging-sa-east-1"
+          auth:
+            type: vault
+            path: "kv/k8s/staging-sa-east-1/token"
+    tools:
+      - get_pods
+      - get_services
+      - get_configmaps
+      - get_secrets
+      - get_events
+      - describe_resource
+      - exec_command
+      - port_forward
+      - get_logs
+      - apply_manifest
+      - delete_resource
+
+  - name: aws
+    type: custom
+    description: "AWS — EC2, RDS, S3, Lambda, SQS, SNS, CloudWatch, IAM"
+    config:
+      region: "sa-east-1"
+      auth:
+        type: iam_role
+        role_arn: "arn:aws:iam::123456789:role/BankingAgentAWS"
+    tools:
+      - describe_instances
+      - describe_rds
+      - list_buckets
+      - get_lambda
+      - invoke_lambda
+      - publish_sns
+      - send_sqs
+      - put_metric
+      - get_logs
+
+  # =============================================================================
+  # BANCO DE DADOS & MENSAGERIA
+  # =============================================================================
+  - name: postgresql
+    type: custom
+    description: "PostgreSQL — Queries, Explain, Stats, Extensions"
+    config:
+      hosts:
+        - "pg-prod.itau.com.br"
+        - "pg-staging.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/postgres/credentials"
+      default_database: "banking"
+    tools:
+      - execute_query
+      - explain_analyze
+      - get_table_stats
+      - get_index_usage
+      - list_extensions
+
+  - name: kafka
+    type: custom
+    description: "Apache Kafka — Topics, Consumers, Lag, Schemas, Produce"
+    config:
+      bootstrap_servers: "kafka-prod.itau.com.br:9092,kafka-staging.itau.com.br:9092"
+      schema_registry: "https://schema-registry.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/kafka/credentials"
+    tools:
+      - list_topics
+      - describe_topic
+      - get_consumer_lag
+      - produce_message
+      - consume_messages
+      - get_schema
+      - register_schema
+      - check_compatibility
+
+  # =============================================================================
+  # CI/CD & PIPELINES
+  # =============================================================================
+  - name: harness
+    type: custom
+    description: "Harness — Pipelines, Feature Flags, Cloud Cost, Chaos, Security"
+    config:
+      base_url: "https://app.harness.io"
+      auth:
+        type: vault
+        path: "kv/harness/api-key"
+      account_id: "itau-banking"
+    tools:
+      - list_pipelines
+      - get_pipeline
+      - run_pipeline
+      - get_execution
+      - get_feature_flag
+      - create_feature_flag
+      - update_feature_flag
+      - get_cloud_cost
+      - run_chaos_experiment
+
+  # =============================================================================
+  # COMPLIANCE & AUDITORIA
+  # =============================================================================
+  - name: opa
+    type: custom
+    description: "Open Policy Agent — Policy Evaluation, Decisions, Logs"
+    config:
+      base_url: "https://opa.itau.com.br"
+      auth:
+        type: vault
+        path: "kv/opa/token"
+    tools:
+      - evaluate_policy
+      - get_decision_logs
+      - list_policies
+      - compile_policy
+
+  - name: audit-service
+    type: custom
+    description: "Serviço de Auditoria Itaú — Event Log, Immutable Trail, Queries"
+    config:
+      base_url: "https://auditoria.itau.com.br/api"
+      auth:
+        type: vault
+        path: "kv/audit/token"
+    tools:
+      - query_events
+      - get_event
+      - verify_chain
+      - export_trail
+
+# =============================================================================
+# CONFIGURAÇÕES GLOBAIS
+# =============================================================================
+global_config:
+  default_timeout_seconds: 30
+  max_retries: 3
+  retry_backoff_ms: 1000
+  circuit_breaker:
+    failure_threshold: 5
+    timeout_seconds: 60
+  logging:
+    level: "INFO"
+    include_request_body: false
+    include_response_body: false
+  audit:
+    enabled: true
+    destination: "audit-service"
+    include_context: true
